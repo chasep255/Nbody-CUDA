@@ -5,6 +5,16 @@
 #include <cassert>
 #include <utility>
 
+inline void cucheck()
+{
+	cudaError_t err = cudaGetLastError();
+	if(err != cudaSuccess)
+	{
+		throw std::runtime_error(cudaGetErrorString(err));
+	}
+}
+
+
 Universe::Universe(UniverseConfiguration c, size_t expected_objects) :
 	config(c) 
 {
