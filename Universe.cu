@@ -265,7 +265,7 @@ void acceleration_kernel(Object* objects,
 	int warp_num = threadIdx.x / warpSize;
 	int wid = threadIdx.x % warpSize;
 	
-	int* stack = visit_stack + tree_depth * warp_num;
+	int* stack = visit_stack + 8 * tree_depth * warp_num;
 	int stack_ptr = 1;
 	
 	if(wid == 0)
@@ -375,7 +375,7 @@ void time_step_kernel(Object* objects, float3* acceleration_buffer, int objects_
 	v.y = copysignf(fminf(max_velocity, fabsf(v.y)), v.y);
 	v.z = copysignf(fminf(max_velocity, fabsf(v.z)), v.z);
 	
-	objects[oid].v = v;
+	objects[oid].v = new_v;
 	
 	objects[oid].p.x += v.x * dt;
 	objects[oid].p.y += v.y * dt;
@@ -480,15 +480,10 @@ void Universe::timeStep()
 	
 	double total = mkrt + mktr + ccms + reorder + ts;
 	
-//	std::cout << "MAKE ROOT: %" << (100.0 * mkrt / total) << std::endl;
-//	std::cout << "MAKE TREE: %" << (100.0 * mktr / total) << std::endl;
-//	std::cout << "CCM: %" << (100.0 * ccms / total) << std::endl;
-//	std::cout << "REORDER : %" << (100.0 * reorder / total) << std::endl;
-//	std::cout << "TIME STEP: %" << (100.0 * ts / total) << std::endl;
-//	std::cout << "TOTAL: " << total << std::endl;
-//	
-//	for(Object& o : objects)
-//	{
-//		std::cout << "(" << o.p.x << ", " << o.p.y << ", " << o.p.z << "), (" << o.v.x << ", " << o.v.y << ", " << o.v.z << ")" << std::endl;
-//	}
+	std::cout << "MAKE ROOT: %" << (100.0 * mkrt / total) << std::endl;
+	std::cout << "MAKE TREE: %" << (100.0 * mktr / total) << std::endl;
+	std::cout << "CCM: %" << (100.0 * ccms / total) << std::endl;
+	std::cout << "REORDER : %" << (100.0 * reorder / total) << std::endl;
+	std::cout << "TIME STEP: %" << (100.0 * ts / total) << std::endl;
+	std::cout << "TOTAL: " << total << std::endl;
 }

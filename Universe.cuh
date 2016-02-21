@@ -70,17 +70,19 @@ class Universe
 		return config;
 	}
 	
+	void setConfiguration(const UniverseConfiguration& cfg)
+	{
+		config = cfg;
+	}
+	
 	const UniverseConfiguration& getConfiguration() const
 	{
 		return config;
 	}
 	
-	float3 getCenterOfMass() const
+	std::vector<Container>& ctrs()
 	{
-		if(containers.empty())
-			return {0};
-		else
-			return containers[0].mass_center;
+		return containers;
 	}
 	
 	private:
