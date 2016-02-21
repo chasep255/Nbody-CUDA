@@ -22,6 +22,18 @@ Universe::Universe(UniverseConfiguration c, size_t expected_objects) :
 	containers.reserve(expected_objects);
 }
 
+Universe::Universe(size_t expected_objects)
+{
+	objects.reserve(expected_objects);
+	containers.reserve(expected_objects);
+	
+	config.graviational_constant = 1.0f;
+	config.max_velocity = FLT_MAX;
+	config.softening_factor = 0.0f;
+	config.threshold_angle = 10.0f;
+	config.time_step = 1.0f;
+}
+
 int Universe::quadrant(float3 origin, float3 position)
 {
 	float dx = origin.x - position.x;
@@ -235,7 +247,14 @@ void Universe::reorderObjectsRecursive(int c, int current_depth, std::vector<Obj
 }
 
 __global__
-void acceleration_kernel(Object* objects, Container* containers, float3* acceleration_buffer, int objects_size, int tree_depth, float threshold_tangent, float g)
+void acceleration_kernel(Object* objects, 
+						 Container* containers, 
+						 float3* acceleration_buffer, 
+						 int objects_size, 
+						 int tree_depth, 
+						 float threshold_tangent, 
+						 float g, 
+						 float softening)
 {
 	extern __shared__ int visit_stack[];
 	
@@ -279,7 +298,9 @@ void acceleration_kernel(Object* objects, Container* containers, float3* acceler
 				for(int q = 0; q < 8; q++)
 				{
 					if(ct.quads[q])
+					{
 						stack[stack_ptr++] = ct.quads[q];
+					}
 				}
 			}
 			else
@@ -305,12 +326,12 @@ void acceleration_kernel(Object* objects, Container* containers, float3* acceler
 		float dx = x - op.x;
 		float dy = y - op.y;
 		float dz = z - op.z;
-		float over_d = rnorm3df(dx, dy, dz);
-		
-		if(__all(!c || (2.0f * r * over_d) < threshold_tangent))
+		float d = norm3df(dx, dy, dz);
+		if(!c || __all(2.0f * __fdividef(r, d) < threshold_tangent))
 		{
 			if(oid != t)
 			{
+				float over_d = __fdividef(1.0f, d + softening);
 				float a = g * m * over_d * over_d;	
 				ax += a * dx * over_d;
 				ay += a * dy * over_d;
@@ -318,7 +339,9 @@ void acceleration_kernel(Object* objects, Container* containers, float3* acceler
 			}
 			
 			if(wid == 0)
+			{
 				stack_ptr = stack_base_ptr;
+			}
 		}
 		
 		stack_ptr = __shfl(stack_ptr, 0);
@@ -330,22 +353,36 @@ void acceleration_kernel(Object* objects, Container* containers, float3* acceler
 }
 
 __global__
-void time_step_kernel(Object* objects, float3* acceleration_buffer, int objects_size, float dt)
+void time_step_kernel(Object* objects, float3* acceleration_buffer, int objects_size, float dt, float max_velocity)
 {
 	int oid = blockDim.x * blockIdx.x + threadIdx.x;
 	if(oid >= objects_size)
 		return;
 	
-	objects[oid].v.x += acceleration_buffer[oid].x * dt;
-	objects[oid].v.y += acceleration_buffer[oid].y * dt;
-	objects[oid].v.z += acceleration_buffer[oid].z * dt;
+	float3 old_v = objects[oid].v;
+	float3 new_v = old_v;
+	new_v.x += acceleration_buffer[oid].x * dt;
+	new_v.y += acceleration_buffer[oid].y * dt;
+	new_v.z += acceleration_buffer[oid].z * dt;
 	
-	objects[oid].p.x += objects[oid].v.x * dt;
-	objects[oid].p.y += objects[oid].v.y * dt;
-	objects[oid].p.z += objects[oid].v.z * dt;
+	
+	float3 v;
+	v.x = 0.5f * (old_v.x + new_v.x);
+	v.y = 0.5f * (old_v.y + new_v.y);
+	v.z = 0.5f * (old_v.z + new_v.z);
+	
+	v.x = copysignf(fminf(max_velocity, fabsf(v.x)), v.x);
+	v.y = copysignf(fminf(max_velocity, fabsf(v.y)), v.y);
+	v.z = copysignf(fminf(max_velocity, fabsf(v.z)), v.z);
+	
+	objects[oid].v = v;
+	
+	objects[oid].p.x += v.x * dt;
+	objects[oid].p.y += v.y * dt;
+	objects[oid].p.z += v.z * dt;
 }
 
-void Universe::computeTimeStep(float dt)
+void Universe::computeTimeStep()
 {
 	Object* objects_d = nullptr;
 	Container* containers_d = nullptr;
@@ -392,7 +429,7 @@ void Universe::computeTimeStep(float dt)
 		blocks = (objects.size() + (threads - 1)) / threads;
 		
 		acceleration_kernel<<< blocks, threads, (threads / p.warpSize) * tree_depth * sizeof(int) * 8 >>>(objects_d, containers_d, acceleration_buffer_d, 
-				objects.size(), tree_depth, tan(config.threshold_angle * 3.14159f / 180.0f), config.graviational_constant);
+				objects.size(), tree_depth, tan(config.threshold_angle * 3.14159f / 180.0f), config.graviational_constant, config.softening_factor);
 		cucheck();
 		
 		cudaOccupancyMaxPotentialBlockSize(&blocks, &threads, time_step_kernel, 0, 0);
@@ -400,7 +437,7 @@ void Universe::computeTimeStep(float dt)
 		
 		blocks = (objects.size() + (threads - 1)) / threads;
 		
-		time_step_kernel<<< blocks, threads, 0 >>>(objects_d, acceleration_buffer_d, objects.size(), dt);
+		time_step_kernel<<< blocks, threads, 0 >>>(objects_d, acceleration_buffer_d, objects.size(), config.time_step, config.max_velocity);
 		cucheck();
 		
 		cudaMemcpy(objects.data(), objects_d, sizeof(Object) * objects.size(), cudaMemcpyDeviceToHost);
@@ -419,7 +456,7 @@ void Universe::computeTimeStep(float dt)
 
 #include "timer.hpp"
 
-void Universe::timeStep(float dt)
+void Universe::timeStep()
 {
 	double mkrt = timer_now();
 	makeRoot();
@@ -438,15 +475,20 @@ void Universe::timeStep(float dt)
 	reorder = timer_now() - reorder;
 	
 	double ts = timer_now();
-	computeTimeStep(dt);
+	computeTimeStep();
 	ts = timer_now() - ts;
 	
 	double total = mkrt + mktr + ccms + reorder + ts;
 	
-	std::cout << "MAKE ROOT: %" << (100.0 * mkrt / total) << std::endl;
-	std::cout << "MAKE TREE: %" << (100.0 * mktr / total) << std::endl;
-	std::cout << "CCM: %" << (100.0 * ccms / total) << std::endl;
-	std::cout << "REORDER : %" << (100.0 * reorder / total) << std::endl;
-	std::cout << "TIME STEP: %" << (100.0 * ts / total) << std::endl;
-	std::cout << "TOTAL: " << total << std::endl;
+//	std::cout << "MAKE ROOT: %" << (100.0 * mkrt / total) << std::endl;
+//	std::cout << "MAKE TREE: %" << (100.0 * mktr / total) << std::endl;
+//	std::cout << "CCM: %" << (100.0 * ccms / total) << std::endl;
+//	std::cout << "REORDER : %" << (100.0 * reorder / total) << std::endl;
+//	std::cout << "TIME STEP: %" << (100.0 * ts / total) << std::endl;
+//	std::cout << "TOTAL: " << total << std::endl;
+//	
+//	for(Object& o : objects)
+//	{
+//		std::cout << "(" << o.p.x << ", " << o.p.y << ", " << o.p.z << "), (" << o.v.x << ", " << o.v.y << ", " << o.v.z << ")" << std::endl;
+//	}
 }

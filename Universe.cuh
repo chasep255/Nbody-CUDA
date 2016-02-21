@@ -31,6 +31,8 @@ struct UniverseConfiguration
 	float time_step;
 	float threshold_angle;
 	float graviational_constant;
+	float softening_factor;
+	float max_velocity;
 };
 
 class Universe
@@ -38,8 +40,9 @@ class Universe
 	public:
 	
 	Universe(UniverseConfiguration c, size_t expected_objects = 0);
+	Universe(size_t expected_objects = 0);
 	
-	void timeStep(float dt);
+	void timeStep();
 	
 	template<typename Z>
 	void addObject(Z&& o)
@@ -62,13 +65,31 @@ class Universe
 		return objects.size();
 	}
 	
+	UniverseConfiguration& getConfiguration()
+	{
+		return config;
+	}
+	
+	const UniverseConfiguration& getConfiguration() const
+	{
+		return config;
+	}
+	
+	float3 getCenterOfMass() const
+	{
+		if(containers.empty())
+			return {0};
+		else
+			return containers[0].mass_center;
+	}
+	
 	private:
 	
 	void makeTree();
 	void makeRoot();
 	void computeComs();
 	void reorderObjects();
-	void computeTimeStep(float dt);
+	void computeTimeStep();
 	void reorderObjectsRecursive(int c, int current_depth, std::vector<Object>& objs, std::vector<Container>& ctrs);
 	static int quadrant(float3 origin, float3 position);
 	
