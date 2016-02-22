@@ -32,6 +32,7 @@ Universe::Universe(size_t expected_objects)
 	config.softening_factor = 0.0f;
 	config.threshold_angle = 10.0f;
 	config.time_step = 1.0f;
+	config.max_distance_from_com = FLT_MAX;
 }
 
 int Universe::quadrant(float3 origin, float3 position)
@@ -63,8 +64,11 @@ void Universe::makeTree()
 				int found_obj = containers[-ctr - 1].quads[q];
 				
 				float3 foundp = objects[found_obj - 1].p;
-				if(foundp.x == obj.p.x && foundp.y == obj.p.y && foundp.z == obj.p.z)
+				if(__builtin_expect(foundp.x == obj.p.x && foundp.y == obj.p.y && foundp.z == obj.p.z, false))
+				{
+					objects[found_obj].m += obj.m;
 					break;
+				}
 				
 				Container new_container;
 				new_container.radius = containers[-ctr - 1].radius * 0.5;
@@ -121,11 +125,13 @@ void Universe::computeComs()
 
 void Universe::makeRoot()
 {
-	containers.clear();
 	float max_x = FLT_MIN, min_x = FLT_MAX;
 	float max_y = FLT_MIN, min_y = FLT_MAX;
 	float max_z = FLT_MIN, min_z = FLT_MAX;
 	
+	#pragma omp parallel for \
+		reduction(max: max_x, max_y, max_z) \
+		reduction(min: min_x, min_y, min_z)
 	for(int o = 0; o < objects.size(); o++)
 	{
 		float3 p = objects[o].p;
@@ -382,11 +388,85 @@ void time_step_kernel(Object* objects, float3* acceleration_buffer, int objects_
 	objects[oid].p.z += v.z * dt;
 }
 
+void Universe::adjustToComFrameAndBound()
+{
+	double cx = 0.0, cy = 0.0, cz = 0.0;
+	double vx = 0.0, vy = 0.0, vz = 0.0;
+	double total_mass = 0.0;
+	
+	#pragma omp parallel for \
+		reduction(+: cx, cy, cz, vx, vy, vz, total_mass)
+	for(int i = 0; i < objects.size(); i++)
+	{
+		total_mass += objects[i].m;
+		cx += objects[i].p.x * objects[i].m;
+		cy += objects[i].p.y * objects[i].m;
+		cz += objects[i].p.z * objects[i].m;
+		
+		vx += objects[i].v.x * objects[i].m;
+		vy += objects[i].v.y * objects[i].m;
+		vz += objects[i].v.z * objects[i].m;
+	}
+	
+	cx /= total_mass;
+	cy /= total_mass;
+	cz /= total_mass;
+	vx /= total_mass;
+	vy /= total_mass;
+	vz /= total_mass;
+	
+	#pragma omp parallel for
+	for(int i = 0; i < objects.size(); i++)
+	{
+		objects[i].p.x -= cx;
+		objects[i].p.y -= cy;
+		objects[i].p.z -= cz;
+		objects[i].v.x -= vx;
+		objects[i].v.y -= vy;
+		objects[i].v.z -= vz;
+		
+		if(objects[i].p.x > config.max_distance_from_com)
+		{
+			objects[i].p.x = config.max_distance_from_com;
+			objects[i].v = {0};
+		}
+		else if(objects[i].p.x < -config.max_distance_from_com)
+		{
+			objects[i].p.x = -config.max_distance_from_com;
+			objects[i].v = {0};
+		}
+		
+		if(objects[i].p.y > config.max_distance_from_com)
+		{
+			objects[i].p.y = config.max_distance_from_com;
+			objects[i].v = {0};
+		}
+		else if(objects[i].p.y < -config.max_distance_from_com)
+		{
+			objects[i].p.y = -config.max_distance_from_com;
+			objects[i].v = {0};
+		}
+		
+		if(objects[i].p.z > config.max_distance_from_com)
+		{
+			objects[i].p.z = config.max_distance_from_com;
+			objects[i].v = {0};
+		}
+		else if(objects[i].p.z < -config.max_distance_from_com)
+		{
+			objects[i].p.z = -config.max_distance_from_com;
+			objects[i].v = {0};
+		}
+	}
+}
+
 void Universe::computeTimeStep()
 {
 	Object* objects_d = nullptr;
 	Container* containers_d = nullptr;
 	float3* acceleration_buffer_d = nullptr;
+	cudaStream_t s;
+	bool stream_created = false;
 	
 	auto free_memory = [&]()
 	{
@@ -396,6 +476,10 @@ void Universe::computeTimeStep()
 			cudaFree(containers_d);
 		if(acceleration_buffer_d)
 			cudaFree(acceleration_buffer_d);
+		if(stream_created)
+			cudaStreamDestroy(s);
+		
+		cucheck();
 	};
 	
 	try
@@ -409,10 +493,14 @@ void Universe::computeTimeStep()
 		cudaMalloc(&acceleration_buffer_d, sizeof(float3) * objects.size());
 		cucheck();
 		
-		cudaMemcpy(objects_d, objects.data(), sizeof(Object) * objects.size(), cudaMemcpyHostToDevice);
+		cudaStreamCreate(&s);
+		cucheck();
+		stream_created = true;
+		
+		cudaMemcpyAsync(objects_d, objects.data(), sizeof(Object) * objects.size(), cudaMemcpyHostToDevice, s);
 		cucheck();
 		
-		cudaMemcpy(containers_d, containers.data(), sizeof(Container) * containers.size(), cudaMemcpyHostToDevice);
+		cudaMemcpyAsync(containers_d, containers.data(), sizeof(Container) * containers.size(), cudaMemcpyHostToDevice, s);
 		cucheck();
 		
 		int device;
@@ -426,9 +514,17 @@ void Universe::computeTimeStep()
 		int blocks, threads;
 		cudaOccupancyMaxPotentialBlockSize(&blocks, &threads, acceleration_kernel, 0);
 		
+		int shmem;
+		threads += p.warpSize;
+		do
+		{
+			threads -= p.warpSize;
+			shmem = (threads / p.warpSize) * tree_depth * sizeof(int) * 8;
+		}
+		while(shmem > p.sharedMemPerBlock);
 		blocks = (objects.size() + (threads - 1)) / threads;
 		
-		acceleration_kernel<<< blocks, threads, (threads / p.warpSize) * tree_depth * sizeof(int) * 8 >>>(objects_d, containers_d, acceleration_buffer_d, 
+		acceleration_kernel<<< blocks, threads, shmem, s>>>(objects_d, containers_d, acceleration_buffer_d, 
 				objects.size(), tree_depth, tan(config.threshold_angle * 3.14159f / 180.0f), config.graviational_constant, config.softening_factor);
 		cucheck();
 		
@@ -437,13 +533,13 @@ void Universe::computeTimeStep()
 		
 		blocks = (objects.size() + (threads - 1)) / threads;
 		
-		time_step_kernel<<< blocks, threads, 0 >>>(objects_d, acceleration_buffer_d, objects.size(), config.time_step, config.max_velocity);
+		time_step_kernel<<< blocks, threads, 0, s >>>(objects_d, acceleration_buffer_d, objects.size(), config.time_step, config.max_velocity);
 		cucheck();
 		
-		cudaMemcpy(objects.data(), objects_d, sizeof(Object) * objects.size(), cudaMemcpyDeviceToHost);
+		cudaMemcpyAsync(objects.data(), objects_d, sizeof(Object) * objects.size(), cudaMemcpyDeviceToHost, s);
 		cucheck();
 		
-		cudaDeviceSynchronize();
+		cudaStreamSynchronize(s);
 		cucheck();
 	}
 	catch(...)
@@ -458,6 +554,7 @@ void Universe::computeTimeStep()
 
 void Universe::timeStep()
 {
+	containers.clear();
 	double mkrt = timer_now();
 	makeRoot();
 	mkrt = timer_now() - mkrt;
@@ -478,12 +575,17 @@ void Universe::timeStep()
 	computeTimeStep();
 	ts = timer_now() - ts;
 	
-	double total = mkrt + mktr + ccms + reorder + ts;
+	double adj = timer_now();
+	adjustToComFrameAndBound();
+	adj = timer_now() - adj;
 	
-	std::cout << "MAKE ROOT: %" << (100.0 * mkrt / total) << std::endl;
-	std::cout << "MAKE TREE: %" << (100.0 * mktr / total) << std::endl;
-	std::cout << "CCM: %" << (100.0 * ccms / total) << std::endl;
-	std::cout << "REORDER : %" << (100.0 * reorder / total) << std::endl;
-	std::cout << "TIME STEP: %" << (100.0 * ts / total) << std::endl;
+	double total = mkrt + mktr + ccms + reorder + ts + adj;
+	
+	std::cout << "MAKE ROOT: %" << (100.0 * mkrt / total) << "\t";
+	std::cout << "MAKE TREE: %" << (100.0 * mktr / total) << "\t";
+	std::cout << "CCM: %" << (100.0 * ccms / total) << "\t";
+	std::cout << "REORDER : %" << (100.0 * reorder / total) << "\t";
+	std::cout << "TIME STEP: %" << (100.0 * ts / total) << "\t";
+	std::cout << "ADJUST: %" << (100.0 * adj / total) << "\t";
 	std::cout << "TOTAL: " << total << std::endl;
 }

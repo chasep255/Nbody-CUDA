@@ -5,11 +5,12 @@
 
 struct Object
 {
+	int tag;
 	float m;
 	float3 p, v;
 	
 	Object() :
-		m(0.0f), p({0}), v({0}) 
+		tag(0), m(0.0f), p({0}), v({0}) 
 	{ }
 };
 
@@ -33,6 +34,7 @@ struct UniverseConfiguration
 	float graviational_constant;
 	float softening_factor;
 	float max_velocity;
+	float max_distance_from_com;
 };
 
 class Universe
@@ -80,11 +82,6 @@ class Universe
 		return config;
 	}
 	
-	std::vector<Container>& ctrs()
-	{
-		return containers;
-	}
-	
 	private:
 	
 	void makeTree();
@@ -93,6 +90,8 @@ class Universe
 	void reorderObjects();
 	void computeTimeStep();
 	void reorderObjectsRecursive(int c, int current_depth, std::vector<Object>& objs, std::vector<Container>& ctrs);
+	void adjustToComFrameAndBound();
+	
 	static int quadrant(float3 origin, float3 position);
 	
 	void checkTree();

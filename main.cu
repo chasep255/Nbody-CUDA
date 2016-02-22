@@ -7,12 +7,13 @@
 #include <cmath>
 #include <thread>
 
-#define N 100000
+#define N 200000
 
 Universe u;
 int2 window_dim;
 float3 com;
-double angle = 0.0;
+double xangle = 0.0;
+double yangle = 0.0;
 double zoom = 1.0;
 float* vertex_buffer = nullptr;
 float alpha = 1.0f;
@@ -30,24 +31,20 @@ void display()
 	glLoadIdentity();
 	gluLookAt(0.0, 0.0, 1000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
 	glScaled(zoom, zoom, zoom);
-	glRotated(angle, 1.0, 0.0, 0.0);
-	glTranslatef(-com.x, -com.y, -com.z);
+	glRotated(xangle, 1.0, 0.0, 0.0);
+	glRotated(yangle, 0.0, 1.0, 0.0);
 	
-	glBegin(GL_POINTS);
-	{
-		glColor3f(1.0f, 0.0f, 0.0f);
-		glVertex3fv((GLfloat*)&com);
-		
-		glColor3f(0.0f, 1.0f, 0.0f);
-		glVertex3f(0.0f, 0.0f, 0.0f);
-	}
-	glEnd();
+	double alpha_norm = M_2_PI * atan(alpha);
 	
-	glColor4f(1.0f, 1.0f, 1.0f, alpha);
+	glColor4f(1.0f, 1.0f, 1.0f, alpha_norm);
 	glEnableClientState(GL_VERTEX_ARRAY);
 	glVertexPointer(3, GL_FLOAT, 0, vertex_buffer);
 	glDrawArrays(GL_POINTS, 0, N);
 	glDisableClientState(GL_VERTEX_ARRAY);
+	
+	
+	glColor3f(1.0, 0.0, 0.0);
+	glutWireCube(2.0 * u.getConfiguration().max_distance_from_com);
 	
 //	for(Container& c : u.ctrs())
 //	{
@@ -66,25 +63,13 @@ void update_universe_display()
 	if(vertex_buffer == nullptr)
 		vertex_buffer = new float[3 * N];
 	
-	double x = 0.0;
-	double y = 0.0;
-	double z = 0.0;
-	double m = 0.0;
-	
 	Object* objects = u.getObjects();
 	
-	#pragma omp parallel for reduction(+: x, y, z, m)
+	#pragma omp parallel for
 	for(int i = 0; i < N; i++)
 	{
-		x += (double)objects[i].p.x * objects[i].m;
-		y += (double)objects[i].p.y * objects[i].m;
-		z += (double)objects[i].p.z * objects[i].m;
-		m += objects[i].m;
 		reinterpret_cast<float3*>(vertex_buffer)[i] =  objects[i].p;
 	}
-	com.x = x / m;
-	com.y = y / m;
-	com.z = z / m;
 }
 
 void create_universe()
@@ -97,15 +82,16 @@ void create_universe()
 	cfg.softening_factor = 0.1;
 	cfg.threshold_angle = 30;
 	cfg.time_step = 0.01;
+	cfg.max_distance_from_com = 1000;
 	u.setConfiguration(cfg);
 	
 	for(int i = 0; i < N; i++)
 	{
 		Object obj;
 		obj.m = 100;
-		obj.p.x = (i > N / 2 ? 200 : 0.0) + 50.0 * ((double)rand() / RAND_MAX) - 25.0;
-		obj.p.y = 2000.0 * ((double)rand() / RAND_MAX) - 250.0;
-		obj.p.z = 50.0 * ((double)rand() / RAND_MAX) - 25.0;
+		obj.p.x = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
+		obj.p.y = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
+		obj.p.z = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
 		u.addObject(obj);
 	}
 	
@@ -114,11 +100,24 @@ void create_universe()
 
 void idle()
 {
-	if(!paused)
+	static bool update = true;
+	
+	if(!paused && update)
 	{
-		u.timeStep();
 		update_universe_display();
+		update = false;
+		std::thread([&]()
+		{
+			u.timeStep();
+			update = true;
+		}).detach();
+		
 		glutPostRedisplay();
+	}
+	
+	if(paused)
+	{
+		update = true;
 	}
 }
 
@@ -126,13 +125,13 @@ int main(int argc, char** argv)
 {
 	glutInit(&argc, argv);
 	glutInitWindowSize(1000, 1000);
-	glEnable(GL_DOUBLE);
+	glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE);
+	glutCreateWindow("N-BODY");
+	
 	glEnable(GL_POINT_SMOOTH);
 	glEnable(GL_BLEND);
 	glPointSize(1.0f);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	
-	glutCreateWindow("N-BODY");
 	
 	glutReshapeFunc([](int w, int h)
 	{
@@ -145,17 +144,17 @@ int main(int argc, char** argv)
 		bool redisplay = false;
 		switch(k)
 		{
-			case 'w': angle += 1.0; redisplay = true; break;
-			case 's': angle -= 1.0; redisplay = true; break;
-			case 'q': alpha += 0.05; redisplay = true; break;
-			case 'a': alpha -= 0.05; redisplay = true; break;
+			case 'w': xangle += 1.0; redisplay = true; break;
+			case 's': xangle -= 1.0; redisplay = true; break;
+			case 'a': yangle += 1.0; redisplay = true; break;
+			case 'd': yangle -= 1.0; redisplay = true; break;
+			case 'z': alpha *= 1.05; redisplay = true; break;
+			case 'x': alpha *= 0.95; redisplay = true; break;
 			case '=': zoom *= 1.2; redisplay = true; break;
 			case '-': zoom /= 1.2; redisplay = true; break;
 			case ' ': paused = !paused; break;
 		}
 		
-		alpha = fmaxf(0.1f, fminf(alpha, 1.0f));
-		std::cout << alpha << std::endl;
 		if(redisplay)
 		{
 			glutPostRedisplay();
