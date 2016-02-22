@@ -7,7 +7,7 @@
 #include <cmath>
 #include <thread>
 
-#define N 1000000
+#define N 100000
 
 Universe u;
 int2 window_dim;
@@ -15,6 +15,7 @@ float3 com;
 double angle = 0.0;
 double zoom = 1.0;
 float* vertex_buffer = nullptr;
+float alpha = 1.0f;
 bool paused = true;
 
 void display()
@@ -23,7 +24,7 @@ void display()
 	glClear(GL_COLOR_BUFFER_BIT);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	gluPerspective(60, window_dim.x / window_dim.y, 50, 10000);
+	gluPerspective(60, (float)window_dim.x / window_dim.y, 50, 10000);
 	
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
@@ -42,7 +43,7 @@ void display()
 	}
 	glEnd();
 	
-	glColor3f(1.0f, 1.0f, 1.0f);
+	glColor4f(1.0f, 1.0f, 1.0f, alpha);
 	glEnableClientState(GL_VERTEX_ARRAY);
 	glVertexPointer(3, GL_FLOAT, 0, vertex_buffer);
 	glDrawArrays(GL_POINTS, 0, N);
@@ -102,9 +103,9 @@ void create_universe()
 	{
 		Object obj;
 		obj.m = 100;
-		obj.p.x = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
-		obj.p.y = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
-		obj.p.z = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
+		obj.p.x = (i > N / 2 ? 200 : 0.0) + 50.0 * ((double)rand() / RAND_MAX) - 25.0;
+		obj.p.y = 2000.0 * ((double)rand() / RAND_MAX) - 250.0;
+		obj.p.z = 50.0 * ((double)rand() / RAND_MAX) - 25.0;
 		u.addObject(obj);
 	}
 	
@@ -126,6 +127,10 @@ int main(int argc, char** argv)
 	glutInit(&argc, argv);
 	glutInitWindowSize(1000, 1000);
 	glEnable(GL_DOUBLE);
+	glEnable(GL_POINT_SMOOTH);
+	glEnable(GL_BLEND);
+	glPointSize(1.0f);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	
 	glutCreateWindow("N-BODY");
 	
@@ -142,10 +147,15 @@ int main(int argc, char** argv)
 		{
 			case 'w': angle += 1.0; redisplay = true; break;
 			case 's': angle -= 1.0; redisplay = true; break;
+			case 'q': alpha += 0.05; redisplay = true; break;
+			case 'a': alpha -= 0.05; redisplay = true; break;
 			case '=': zoom *= 1.2; redisplay = true; break;
 			case '-': zoom /= 1.2; redisplay = true; break;
 			case ' ': paused = !paused; break;
 		}
+		
+		alpha = fmaxf(0.1f, fminf(alpha, 1.0f));
+		std::cout << alpha << std::endl;
 		if(redisplay)
 		{
 			glutPostRedisplay();
