@@ -6,8 +6,9 @@
 #include <ctime>
 #include <cmath>
 #include <thread>
+#include "galaxy_builder.cuh"
 
-#define N 200000
+#define N 50000
 
 Universe u;
 int2 window_dim;
@@ -66,7 +67,7 @@ void update_universe_display()
 	Object* objects = u.getObjects();
 	
 	#pragma omp parallel for
-	for(int i = 0; i < N; i++)
+	for(int i = 0; i < u.size(); i++)
 	{
 		reinterpret_cast<float3*>(vertex_buffer)[i] =  objects[i].p;
 	}
@@ -79,21 +80,23 @@ void create_universe()
 	UniverseConfiguration cfg;
 	cfg.graviational_constant = 1.0;
 	cfg.max_velocity = 1e9;
-	cfg.softening_factor = 0.1;
-	cfg.threshold_angle = 30;
-	cfg.time_step = 0.01;
-	cfg.max_distance_from_com = 1000;
+	cfg.softening_factor = 0.01;
+	cfg.threshold_angle = 25;
+	cfg.time_step = 0.02;
+	cfg.max_distance_from_com = 100000;
 	u.setConfiguration(cfg);
 	
-	for(int i = 0; i < N; i++)
-	{
-		Object obj;
-		obj.m = 100;
-		obj.p.x = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
-		obj.p.y = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
-		obj.p.z = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
-		u.addObject(obj);
-	}
+//	for(int i = 0; i < N; i++)
+//	{
+//		Object obj;
+//		obj.m = 100;
+//		obj.p.x = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
+//		obj.p.y = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
+//		obj.p.z = 500.0 * ((double)rand() / RAND_MAX) - 250.0;
+//		u.addObject(obj);
+//	}
+	
+	build_galaxy(u, N, 100, 1, 2000);
 	
 	update_universe_display();
 }
