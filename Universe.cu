@@ -1,4 +1,4 @@
-#include "Universe.cuh"
+#include "Universe.hpp"
 #include <cfloat>
 #include <cmath>
 #include <iostream>
@@ -46,6 +46,17 @@ int Universe::quadrant(float3 origin, float3 position)
 
 void Universe::makeTree()
 {
+	
+	auto is_same = [](float3 a, float3 b)
+	{
+		float dx = fabsf(a.x - b.x);
+		float dy = fabsf(a.y - b.y);
+		float dz = fabsf(a.z - b.z);
+		
+		const float e = FLT_EPSILON * 10.0f;
+		
+		return dx < e && dy < e && dz < e;
+	};
 	for(int o = 0; o < objects.size(); o++)
 	{
 		Object& obj = objects[o];
@@ -64,7 +75,7 @@ void Universe::makeTree()
 				int found_obj = containers[-ctr - 1].quads[q];
 				
 				float3 foundp = objects[found_obj - 1].p;
-				if(__builtin_expect(foundp.x == obj.p.x && foundp.y == obj.p.y && foundp.z == obj.p.z, false))
+				if(__builtin_expect(is_same(foundp, obj.p), false))
 				{
 					objects[found_obj].m += obj.m;
 					break;
